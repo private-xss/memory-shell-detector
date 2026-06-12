@@ -8,11 +8,11 @@
 
 #### 容器型内存马
 
-- **Tomcat**: Filter、Servlet、Listener、Valve
-- **Jetty**: Filter、Servlet、Handler
-- **WebLogic**: Filter、Servlet
-- **JBoss/WildFly (Undertow)**: Filter、Servlet
-- **Resin**: Filter、Servlet
+- **Tomcat**: Filter、Servlet、Listener、Valve、WebSocket Endpoint
+- **Jetty**: Filter、Servlet、Handler、WebSocket Endpoint
+- **WebLogic**: Filter、Servlet、WebSocket Endpoint
+- **JBoss/WildFly (Undertow)**: Filter、Servlet、WebSocket Endpoint
+- **Resin**: Filter、Servlet、WebSocket Endpoint
 
 #### 框架型内存马
 
@@ -34,21 +34,45 @@
 3. **字节码特征检测**: Runtime.exec、ProcessBuilder、ScriptEngine、ClassLoader.defineClass、JNDI lookup、反序列化等危险调用
 4. **类路径检测**: 不在标准jar/war/classes目录中的类
 
+### WebSocket 内存马检测
+
+WebSocket 内存马通过动态注册 WebSocket Endpoint 实现命令执行，检测策略：
+
+| 检测层           | 说明                                                         |
+| ---------------- | ------------------------------------------------------------ |
+| 容器注册表检测   | 反射获取 Tomcat `WsServerContainer` 内部的 `endpointConfigs`/`scannedClassMap`/`endpoints` |
+| JSR-356 接口扫描 | 扫描继承 `javax.websocket.Endpoint`/`jakarta.websocket.Endpoint` 的类，以及带 `@ServerEndpoint` 注解的类 |
+| 容器特有检测     | Jetty WebSocketServlet/WebSocketHandler、WebLogic `@WebSocket` 注解、Resin WebSocketListener |
+
+各容器 WebSocket 注册机制差异：
+
+| 容器             | 注册方式                                             | 反射获取路径                                                 |
+| ---------------- | ---------------------------------------------------- | ------------------------------------------------------------ |
+| Tomcat           | JSR-356 `ServerContainer.addEndpoint()`              | `StandardContext.servletContext` → `WsServerContainer` → `endpointConfigs`/`scannedClassMap`/`endpoints` |
+| Jetty            | JSR-356 + `WebSocketServlet`/`WebSocketHandler`      | 扫描 `WebSocketServlet`/`WebSocketHandler` 子类              |
+| Undertow/WildFly | JSR-356                                              | 扫描 `javax.websocket.Endpoint` 实现类                       |
+| WebLogic         | JSR-356 + `@weblogic.websocket.annotation.WebSocket` | `ServerContainer` 属性 + 注解扫描                            |
+| Resin            | `WebSocketListener`/`WebSocketProtocol` 接口         | 扫描实现类                                                   |
+
 ### 操作功能
 
 - **进程扫描**: 自动发现系统中运行的Java进程
 - **代码反编译**: 查看可疑类的源代码，支持语法高亮
-- **内存马移除**: 支持移除 Filter、Servlet、Listener、Valve、Controller、Interceptor
+- **内存马移除**: 支持移除 Filter、Servlet、Listener、Valve、Controller、Interceptor、WebSocket Endpoint
 - **报告导出**: 支持JSON和文本格式的检测报告
 
 ## 环境要求
 
 - JDK 1.8+
-
+- Maven 3.6+
 
 ## 快速开始
 
+### 编译项目
 
+```bash
+mvn clean package -DskipTests
+```
 
 编译完成后会生成以下JAR文件：
 
@@ -67,7 +91,7 @@ java -jar memory-shell-detector-gui.jar
 GUI界面功能：
 
 1. 左侧面板显示Java进程列表，双击可扫描
-2. 右上面板显示检测结果，按类型分组（Filter/Servlet/Listener/Valve/Controller/Interceptor/Agent等）
+2. 右上面板显示检测结果，按类型分组（Filter/Servlet/Listener/Valve/Controller/Interceptor/WebSocket/Agent等）
 3. 可疑内存马以红色高亮显示
 4. 右下面板显示反编译代码
 5. 工具栏提供刷新、扫描、查看、移除、导出等操作
@@ -83,7 +107,11 @@ java -jar memory-shell-detector-cli.jar -l
 #### 扫描指定进程
 
 ```bash
+# 简洁输出（默认，不显示字节码）
 java -jar memory-shell-detector-cli.jar -s <PID>
+
+# 详细输出（包含反编译字节码）
+java -jar memory-shell-detector-cli.jar -s <PID> -d
 ```
 
 #### 查看可疑类代码
@@ -110,31 +138,33 @@ java -jar memory-shell-detector-cli.jar --report report.txt -p <PID> -f text
 
 ## 命令行参数
 
-| 参数                  | 说明                 |
-| --------------------- | -------------------- |
-| `-l, --list`          | 列出所有Java进程     |
-| `-s, --scan <PID>`    | 扫描指定进程         |
-| `-v, --view <类名>`   | 查看类的反编译代码   |
-| `-r, --remove <类名>` | 移除指定的内存马     |
-| `-p, --pid <PID>`     | 指定目标进程ID       |
-| `--report <文件>`     | 导出检测报告         |
-| `-f, --format <格式>` | 报告格式: json/text  |
-| `--hex`               | 以十六进制显示字节码 |
-| `--force`             | 强制执行（跳过确认） |
-| `--verbose`           | 显示详细输出         |
-| `-h, --help`          | 显示帮助信息         |
+| 参数                  | 说明                             |
+| --------------------- | -------------------------------- |
+| `-l, --list`          | 列出所有Java进程                 |
+| `-s, --scan <PID>`    | 扫描指定进程                     |
+| `-v, --view <类名>`   | 查看类的反编译代码               |
+| `-r, --remove <类名>` | 移除指定的内存马                 |
+| `-p, --pid <PID>`     | 指定目标进程ID                   |
+| `-d, --detail`        | 显示详细内容（包含反编译字节码） |
+| `--report <文件>`     | 导出检测报告                     |
+| `-f, --format <格式>` | 报告格式: json/text              |
+| `--hex`               | 以十六进制显示字节码             |
+| `--force`             | 强制执行（跳过确认）             |
+| `--verbose`           | 显示详细输出                     |
+| `-h, --help`          | 显示帮助信息                     |
 
 ## 支持移除的内存马类型
 
-| 类型        | 支持移除                        |
-| ----------- | ------------------------------- |
-| Filter      | ✅                               |
-| Servlet     | ✅                               |
-| Listener    | ✅                               |
-| Valve       | ✅                               |
-| Controller  | ✅                               |
-| Interceptor | ✅                               |
-| Agent       | ❌ (Agent型无法移除，需重启应用) |
+| 类型        | 支持移除   | 说明                                                |
+| ----------- | ---------- | --------------------------------------------------- |
+| Filter      | ✅          | 从容器 FilterChain 中移除                           |
+| Servlet     | ✅          | 从容器 ServletMapping 中移除                        |
+| Listener    | ✅          | 从容器 Listener 列表中移除                          |
+| Valve       | ✅          | 从 Tomcat Pipeline 中移除                           |
+| Controller  | ✅          | 从 Spring HandlerMapping 中移除                     |
+| Interceptor | ✅          | 从 Spring HandlerMapping 中移除                     |
+| WebSocket   | ✅ (Tomcat) | 从 WsServerContainer 注册表中移除；其他容器建议重启 |
+| Agent       | ❌          | Agent型无法移除，需重启应用                         |
 
 ## 风险等级
 
@@ -146,7 +176,24 @@ java -jar memory-shell-detector-cli.jar --report report.txt -p <PID> -f text
 | LOW      | 低风险，基本可排除       |
 | SAFE     | 安全，已在白名单中       |
 
+## 项目结构
 
+```
+memory-shell-detector/
+├── detector-core/      # 核心检测引擎
+│   ├── analyzer/       # 路由分析器和容器适配器
+│   ├── inspector/      # 类检查器和白名单
+│   ├── model/          # 数据模型
+│   ├── remover/        # 内存马移除器
+│   ├── report/         # 报告生成器
+│   ├── scanner/        # 进程扫描器
+│   ├── signature/      # 特征库
+│   └── viewer/         # 代码查看器
+├── detector-agent/     # Java Agent模块（核心检测逻辑）
+├── detector-cli/       # 命令行界面
+├── detector-gui/       # 图形界面
+└── pom.xml
+```
 
 ## 注意事项
 
@@ -154,7 +201,8 @@ java -jar memory-shell-detector-cli.jar --report report.txt -p <PID> -f text
 2. **JDK版本**: 目标进程和检测工具需使用相同或兼容的JDK版本
 3. **移除风险**: 移除内存马可能影响应用正常运行，建议先备份
 4. **Agent型**: Agent型内存马无法通过本工具移除，需要重启应用
-5. **重启Tomcat**: 修改Agent后需要重启Tomcat才能生效（Agent会被JVM缓存）
+5. **WebSocket移除**: Tomcat 环境下可从 WsServerContainer 注册表移除 WebSocket Endpoint，其他容器建议重启应用
+6. **重启Tomcat**: 修改Agent后需要重启Tomcat才能生效（Agent会被JVM缓存）
 
 ## 许可证
 
